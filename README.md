@@ -1,108 +1,39 @@
-# Agentic scaffold
+# agentic-account
 
-Set up and track brand social accounts and their connections.
+A local-first pack for planning, tracking, and safely guiding brand social-account setup. It does not create accounts or bypass platform checks: CAPTCHA, SMS codes, and identity checks are explicitly routed to `needs-human`.
 
-Clone this repo to start a new pack. It gives one core with three
-faces: a terminal command, an npm import, and an MCP server.
+## Library
 
-## What you get
+```ts
+import { AccountRegistry, platformRequirements } from "agentic-account";
+const registry = new AccountRegistry();
+const account = registry.create({ platform: "instagram", handle: "acme", emailRef: "BRAND_EMAIL" });
+registry.advance(account.id); // planned -> creating
+registry.advance(account.id); // creating -> verifying
+registry.advance(account.id, "needs-human"); // CAPTCHA/SMS/identity check
+```
 
-- One core: brand config, logs, guards, routing, dry run, cost reports.
-- Three faces over that core: CLI, library, MCP server.
-- A frozen core contract, so packs share one API.
-- A worker entry and a wrangler sample for edge deploys.
-- Build, typecheck, and tests that pass from a fresh clone.
+`platformRequirements` covers Instagram, TikTok, X, LinkedIn, Facebook, Reddit, Threads, Bluesky, YouTube, and Pinterest. Credential fields accept only references such as `BRAND_EMAIL`, `env:BRAND_EMAIL`, or `vault://team/social`; raw secrets are rejected.
 
-## Quick start
+## CLI
 
 ```sh
-git clone https://github.com/pooriaarab/agentic-account.git my-pack
-cd my-pack
-npm install
-npm run build
-npm run typecheck
-npm test
+agentic-account account create --platform instagram --handle acme --email-ref BRAND_EMAIL
+agentic-account account list
+agentic-account account checklist --id <id>
+agentic-account account advance --id <id> --state needs-human
+agentic-account account connect --id <id> --provider direct --credential-ref vault://team/instagram
+agentic-account account warmup --id <id>
+agentic-account costs
+agentic-account mcp
 ```
 
-Run the command:
+The in-process CLI registry is intended for guided sessions; use the library to persist records in your own storage.
 
-```sh
-node dist/cli.js summary --text "hello world hello"
-```
+## MCP tools
 
-Call the library:
+- `account_create`, `account_list`, `account_show`
+- `account_checklist`, `account_advance`, `account_connect`, `account_warmup`
+- `get_cost_report`
 
-```js
-import { summarizeText } from "./dist/index.js";
-
-console.log(summarizeText("hello world hello"));
-```
-
-Start the MCP server:
-
-```sh
-node dist/cli.js mcp
-```
-
-## Three usecases
-
-1. You run one text summary from the terminal.
-2. You import the summary function in a script.
-3. You let an agent call the same function as an MCP tool.
-
-## Clone checklist
-
-This repo is a template. Replace each slot in each file that holds it.
-
-- `agentic-account`: the directory name, like `my-pack`.
-- `agentic-account`: the npm name, like `agentic-<block>` (bare name, never @pooriaarab/ scoped unless the brief says scoped).
-- `agentic-account`: the terminal command, like `my-pack`.
-- `Set up and track brand social accounts and their connections.`: one plain sentence, under 100 chars.
-- `accounts,social,setup,registry,agentic-suite,cli,mcp`: plain keywords, like `notes, search, cli`.
-- `pooriaarab`: the repo owner, like `pooriaarab`.
-
-Slot files: `AGENTS.md`, `SKILL.md`, `RULES.md`, `llms.txt`,
-`server.json`, `.mcp.json`, `wrangler.jsonc`.
-
-Then rename the scaffold identity itself:
-
-- `package.json`: name, bin commands, mcpName. Remove `"private": true`.
-- `src/index.ts`: the `DEFAULT_BRAND` fields.
-- This file: the pitch and the examples above.
-
-At publish time, set `server.json` version to the npm version and
-`server.json` repository id from `gh api repos/OWNER/REPO --jq .id`.
-
-## Gates
-
-Run all three before you push a pack:
-
-```sh
-npm run build && npm run typecheck && npm test
-```
-
-Then run the real installed CLI once from a tarball:
-
-```sh
-npm pack
-npx --yes --package ./pooriaarab-agentic-account-0.1.0.tgz agentic-pack summary --text "hello"
-```
-
-## Release flow
-
-Push to `main` for review. Merge to `release` to publish. The
-publish workflow ships only when the version is new.
-
-## Layout
-
-- `src/index.ts`: the library face.
-- `src/cli.ts`: the terminal face.
-- `src/mcp.ts`: the MCP server. `src/mcp-bin.ts` starts it.
-- `src/worker.ts`: the edge worker face.
-- `src/core.ts`: the shared core.
-- `agentic-core.d.ts`: the frozen contract.
-- `docs/agentic-core.md`: the contract in plain words.
-
-## License
-
-MIT. See `LICENSE`.
+All three interfaces expose the same setup workflow and state machine: `planned → creating → verifying → profile → connecting → warming → active`, plus `paused` and `needs-human`.
