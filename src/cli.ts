@@ -1,197 +1,22 @@
 #!/usr/bin/env node
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import {
-  dispatchText,
-  getCostReport,
-  GuardError,
-  LocalRouterAdapter,
-  summarizeText,
-  VendorError,
-  type RouterAdapter,
-} from "./core.js";
+import { getCostReport } from "./core.js";
+import { AccountRegistry, type AccountState, type ConnectionProvider, type Platform } from "./account.js";
 import { DEFAULT_BRAND } from "./index.js";
 import { VERSION } from "./version.js";
 
-export class UsageError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UsageError";
-  }
-}
-
-export type CliCommand = "summary" | "dispatch" | "costs" | "mcp" | "help" | "version";
-
-export interface CliRequest {
-  command: CliCommand;
-  text?: string;
-  file?: string;
-  dryRun: boolean;
-  topN?: number;
-}
-
-export function parseArgs(argv: string[]): CliRequest {
-  const request: CliRequest = { command: "help", dryRun: false };
-  const args = [...argv];
-  const first = args.shift();
-  if (first === undefined || first === "--help" || first === "-h") {
-    return request;
-  }
-  if (first === "--version" || first === "-V") {
-    request.command = "version";
-    return request;
-  }
-  if (first !== "summary" && first !== "dispatch" && first !== "costs" && first !== "mcp") {
-    throw new UsageError(`unknown command "${first}"`);
-  }
-  request.command = first;
-  while (args.length > 0) {
-    const flag = args.shift() as string;
-    if (flag === "--dry-run" && request.command === "dispatch") {
-      request.dryRun = true;
-      continue;
-    }
-    if ((flag === "--text" || flag === "--file" || flag === "--top") && args.length > 0) {
-      const value = args.shift() as string;
-      if (flag === "--text") request.text = value;
-      if (flag === "--file") request.file = value;
-      if (flag === "--top") {
-        const topN = Number.parseInt(value, 10);
-        if (!Number.isInteger(topN) || topN < 0) {
-          throw new UsageError(`--top needs an integer of 0 or more, got "${value}"`);
-        }
-        request.topN = topN;
-      }
-      continue;
-    }
-    throw new UsageError(`unknown flag "${flag}" for "${request.command}"`);
-  }
-  if (
-    (request.command === "summary" || request.command === "dispatch") &&
-    request.text === undefined &&
-    request.file === undefined
-  ) {
-    throw new UsageError(`${request.command} needs --text or --file`);
-  }
-  return request;
-}
-
-export interface CliIo {
-  out(line: string): void;
-  err(line: string): void;
-  readFile(path: string): string;
-  router: RouterAdapter;
-}
-
-function defaultIo(): CliIo {
-  return {
-    out: (line) => console.log(line),
-    err: (line) => console.error(line),
-    readFile: (path) => readFileSync(path, "utf8"),
-    router: new LocalRouterAdapter(),
-  };
-}
-
-function helpText(): string {
-  const command = DEFAULT_BRAND.command;
-  return [
-    `${DEFAULT_BRAND.name} ${VERSION}`,
-    `${DEFAULT_BRAND.description}`,
-    "",
-    `Usage: ${command} <command> [flags]`,
-    "",
-    "Commands:",
-    "  summary --text <t> [--file <p>] [--top <n>]  Print text stats as JSON.",
-    "  dispatch --text <t> [--file <p>] [--dry-run] Route one text, print the receipt.",
-    "  costs                                      Print the cost report as JSON.",
-    "  mcp                                        Start the MCP server on stdio.",
-    "",
-    "Flags:",
-    "  --help, -h       Print this help.",
-    "  --version, -V    Print the version.",
-  ].join("\n");
-}
-
-function readInput(request: CliRequest, io: CliIo): string {
-  if (request.file !== undefined) {
-    return io.readFile(request.file);
-  }
-  return request.text ?? "";
-}
-
-export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {
-  let request: CliRequest;
-  try {
-    request = parseArgs(argv);
-  } catch (error) {
-    io.err(error instanceof Error ? error.message : String(error));
-    io.err(`Run "${DEFAULT_BRAND.command} --help" for usage.`);
-    return 2;
-  }
-  try {
-    switch (request.command) {
-      case "help":
-        io.out(helpText());
-        return 0;
-      case "version":
-        io.out(VERSION);
-        return 0;
-      case "summary": {
-        const summary = summarizeText(readInput(request, io), { topN: request.topN });
-        io.out(JSON.stringify(summary));
-        return 0;
-      }
-      case "dispatch": {
-        const result = await dispatchText(readInput(request, io), {
-          adapter: io.router,
-          dryRun: request.dryRun,
-        });
-        io.out(JSON.stringify(result));
-        return 0;
-      }
-      case "costs":
-        io.out(JSON.stringify(getCostReport()));
-        return 0;
-      case "mcp": {
-        const { startMcp } = await import("./mcp.js");
-        await startMcp();
-        return 0;
-      }
-    }
-  } catch (error) {
-    if (error instanceof GuardError || error instanceof VendorError || error instanceof UsageError) {
-      io.err(`${error.name}: ${error.message}`);
-      return 1;
-    }
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      io.err(`file not found: ${request.file ?? ""}`);
-      return 1;
-    }
-    throw error;
-  }
-}
-
-function isMainModule(): boolean {
-  const invoked = process.argv[1];
-  if (typeof invoked !== "string") return false;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(invoked)).href;
-  } catch {
-    return false;
-  }
-}
-
-if (isMainModule()) {
-  runCli(process.argv.slice(2)).then(
-    (code) => {
-      // Exit nonzero at once. On zero, fall off the end so a running
-      // server (mcp) keeps its stdio handles open. Plain commands
-      // hold no handles and exit 0 on their own.
-      if (code !== 0) process.exit(code);
-    },
-    (error: unknown) => {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
-    },
-  );
-}
+export class UsageError extends Error { constructor(message: string) { super(message); this.name = "UsageError"; } }
+export type CliCommand = "account" | "costs" | "mcp" | "help" | "version";
+export interface CliRequest { command: CliCommand; action?: "create" | "list" | "show" | "checklist" | "advance" | "connect" | "warmup"; id?: string; platform?: Platform; handle?: string; emailRef?: string; phoneRef?: string; provider?: ConnectionProvider; credentialRef?: string; state?: AccountState; }
+const registry = new AccountRegistry();
+function value(args: string[], flag: string): string { const result = args.shift(); if (!result) throw new UsageError(`${flag} needs a value`); return result; }
+export function parseArgs(argv: string[]): CliRequest { const args = [...argv]; const first = args.shift(); if (!first || first === "--help" || first === "-h") return { command: "help" }; if (first === "--version" || first === "-V") return { command: "version" }; if (first === "costs" || first === "mcp") { if (args.length) throw new UsageError(`${first} takes no flags`); return { command: first }; } if (first !== "account") throw new UsageError(`unknown command "${first}"`); const action = args.shift(); if (!action || !["create", "list", "show", "checklist", "advance", "connect", "warmup"].includes(action)) throw new UsageError("account needs create, list, show, checklist, advance, connect, or warmup"); const request: CliRequest = { command: "account", action: action as CliRequest["action"] };
+  while (args.length) { const flag = args.shift()!; switch (flag) { case "--id": request.id = value(args, flag); break; case "--platform": request.platform = value(args, flag) as Platform; break; case "--handle": request.handle = value(args, flag); break; case "--email-ref": request.emailRef = value(args, flag); break; case "--phone-ref": request.phoneRef = value(args, flag); break; case "--provider": request.provider = value(args, flag) as ConnectionProvider; break; case "--credential-ref": request.credentialRef = value(args, flag); break; case "--state": request.state = value(args, flag) as AccountState; break; default: throw new UsageError(`unknown flag "${flag}"`); } }
+  if (action === "create" && (!request.platform || !request.handle)) throw new UsageError("account create needs --platform and --handle"); if (["show", "checklist", "advance", "connect", "warmup"].includes(action) && !request.id) throw new UsageError(`account ${action} needs --id`); if (action === "connect" && !request.provider) throw new UsageError("account connect needs --provider"); return request; }
+export interface CliIo { out(line: string): void; err(line: string): void; readFile(path: string): string; }
+function defaultIo(): CliIo { return { out: console.log, err: console.error, readFile: (path) => readFileSync(path, "utf8") }; }
+function helpText(): string { return `${DEFAULT_BRAND.name} ${VERSION}\n${DEFAULT_BRAND.description}\n\nUsage: ${DEFAULT_BRAND.command} <command> [flags]\n\nCommands:\n  account create --platform <p> --handle <h> [--email-ref ENV] [--phone-ref ENV]\n  account list\n  account show --id <id>\n  account checklist --id <id>\n  account advance --id <id> [--state <state>]\n  account connect --id <id> --provider <provider> [--credential-ref REF]\n  account warmup --id <id>\n  costs\n  mcp\n\nCredential values must be references (ENV_VAR, env:ENV_VAR, or vault://path), never secrets.`; }
+export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> { let r: CliRequest; try { r = parseArgs(argv); } catch (e) { io.err(e instanceof Error ? e.message : String(e)); return 2; } try { if (r.command === "help") io.out(helpText()); else if (r.command === "version") io.out(VERSION); else if (r.command === "costs") io.out(JSON.stringify(getCostReport())); else if (r.command === "mcp") { const { startMcp } = await import("./mcp.js"); await startMcp({ registry }); } else { let result: unknown; switch (r.action) { case "create": result = registry.create({ platform: r.platform!, handle: r.handle!, emailRef: r.emailRef, phoneRef: r.phoneRef }); break; case "list": result = registry.list(); break; case "show": result = registry.get(r.id!); break; case "checklist": result = registry.checklist(r.id!); break; case "advance": result = registry.advance(r.id!, r.state); break; case "connect": result = registry.connect(r.id!, r.provider!, r.credentialRef); break; case "warmup": result = registry.warmupPlan(r.id!); break; } io.out(JSON.stringify(result)); } return 0; } catch (e) { io.err(e instanceof Error ? e.message : String(e)); return 1; } }
+function isMainModule(): boolean { try { return typeof process.argv[1] === "string" && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; } }
+if (isMainModule()) runCli(process.argv.slice(2)).then((code) => { if (code) process.exit(code); }, (e: unknown) => { console.error(String(e)); process.exit(1); });
