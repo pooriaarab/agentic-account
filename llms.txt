@@ -1,0 +1,15 @@
+# agentic-account
+
+Set up and track brand social accounts and their connections.
+
+Keywords: accounts,social,setup,registry,agentic-suite,cli,mcp.
+
+- SDK: import { summarizeText, dispatchText } from "agentic-account".
+- CLI: agentic-account summary --text "...".
+- MCP: run agentic-account mcp, then call summarize_text.
+
+## Docs
+
+- README: https://github.com/pooriaarab/agentic-account
+- Core contract: https://github.com/pooriaarab/agentic-account/blob/main/docs/agentic-core.md
+- License: MIT
